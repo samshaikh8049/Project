@@ -1,0 +1,293 @@
+"""
+Generates the official Jupyter Notebook deliverable for the Movie Recommendation System.
+"""
+
+import json
+
+notebook = {
+    "cells": [
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "# ElevateLabs AI/ML Internship Project Phase\n",
+                "## Project #8: Movie Recommendation System with Hybrid ML & NLP\n",
+                "**Domain:** Artificial Intelligence & Machine Learning  \n",
+                "**Dataset:** MovieLens 100K Benchmark Dataset (GroupLens Research)  \n",
+                "**Tools:** Python, Scikit-Learn, Pandas, NumPy, Matplotlib, Seaborn, Streamlit\n",
+                "---\n",
+                "### Project Objectives:\n",
+                "1. Load, explore, and preprocess MovieLens dataset (movies, ratings, tags).\n",
+                "2. Build Content-Based Filtering using TF-IDF vectorization and Cosine Similarity on genres and tags.\n",
+                "3. Build Collaborative Filtering using TruncatedSVD Matrix Factorization on user-item interaction matrix.\n",
+                "4. Evaluate Collaborative Filtering performance using Root Mean Squared Error (RMSE) and MAE on test split.\n",
+                "5. Implement a Hybrid Recommendation Engine with Bayesian IMDb rating priors to handle cold-start.\n",
+                "6. Test recommendations across iconic films and evaluate accuracy."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": 1,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "# 1. Imports and Setup\n",
+                "import os\n",
+                "import re\n",
+                "import numpy as np\n",
+                "import pandas as pd\n",
+                "import matplotlib.pyplot as plt\n",
+                "import seaborn as sns\n",
+                "from sklearn.feature_extraction.text import TfidfVectorizer\n",
+                "from sklearn.metrics.pairwise import cosine_similarity\n",
+                "from sklearn.decomposition import TruncatedSVD\n",
+                "from sklearn.model_selection import train_test_split\n",
+                "from sklearn.metrics import mean_squared_error, mean_absolute_error\n",
+                "\n",
+                "plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.available else 'default')\n",
+                "print('Environment initialized successfully!')"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "---\n",
+                "### 2. Loading the Raw Datasets"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": 2,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "movies = pd.read_csv('data/ml-latest-small/movies.csv')\n",
+                "ratings = pd.read_csv('data/ml-latest-small/ratings.csv')\n",
+                "tags = pd.read_csv('data/ml-latest-small/tags.csv')\n",
+                "\n",
+                "print(f'Movies Dataset Shape:  {movies.shape}')\n",
+                "print(f'Ratings Dataset Shape: {ratings.shape}')\n",
+                "print(f'Tags Dataset Shape:    {tags.shape}')\n",
+                "print(f'Unique Users: {ratings[\"userId\"].nunique()} | Unique Movies: {ratings[\"movieId\"].nunique()}')\n",
+                "display(movies.head(3))\n",
+                "display(ratings.head(3))"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "---\n",
+                "### 3. Exploratory Data Analysis (EDA) & Visualizations"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": 3,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "fig, axes = plt.subplots(1, 2, figsize=(14, 5))\n",
+                "\n",
+                "# Rating distribution\n",
+                "sns.histplot(ratings['rating'], bins=10, kde=True, color='#e63946', ax=axes[0])\n",
+                "axes[0].set_title('Distribution of User Ratings (0.5 to 5.0 Stars)', fontsize=12)\n",
+                "axes[0].set_xlabel('Rating')\n",
+                "axes[0].set_ylabel('Frequency')\n",
+                "\n",
+                "# Most reviewed movies\n",
+                "top_rated_count = ratings.groupby('movieId').size().reset_index(name='vote_count')\n",
+                "top_rated_count = top_rated_count.merge(movies, on='movieId').sort_values('vote_count', ascending=False).head(10)\n",
+                "sns.barplot(data=top_rated_count, x='vote_count', y='title', hue='title', palette='viridis', legend=False, ax=axes[1])\n",
+                "axes[1].set_title('Top 10 Most Reviewed Movies in MovieLens', fontsize=12)\n",
+                "axes[1].set_xlabel('Number of Ratings')\n",
+                "axes[1].set_ylabel('')\n",
+                "\n",
+                "plt.tight_layout()\n",
+                "plt.show()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "---\n",
+                "### 4. Feature Engineering & Preprocessing\n",
+                "- Extract release year via Regex\n",
+                "- Aggregate user tags per movie\n",
+                "- Formulate Metadata Soup (Genres + Tags)\n",
+                "- Compute Bayesian Weighted Rating (IMDb Formula):\n",
+                "$$WR = \\left(\\frac{v}{v + m}\\right) \\cdot R + \\left(\\frac{m}{v + m}\\right) \\cdot C$$"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": 4,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "def extract_year(title):\n",
+                "    m = re.search(r'\\((\\d{4})\\)', str(title))\n",
+                "    return int(m.group(1)) if m else np.nan\n",
+                "\n",
+                "movies['year'] = movies['title'].apply(extract_year)\n",
+                "movies['genres_str'] = movies['genres'].apply(lambda x: '' if x == '(no genres listed)' else x.replace('|', ' '))\n",
+                "\n",
+                "# Aggregate tags\n",
+                "tags_agg = tags.groupby('movieId')['tag'].apply(lambda t: ' '.join(t.dropna().astype(str).str.lower())).reset_index()\n",
+                "movies = movies.merge(tags_agg, on='movieId', how='left')\n",
+                "movies['tag'] = movies['tag'].fillna('')\n",
+                "movies['soup'] = movies['genres_str'] + ' ' + movies['genres_str'] + ' ' + movies['tag']\n",
+                "\n",
+                "# Rating statistics\n",
+                "stats = ratings.groupby('movieId').agg(vote_count=('rating', 'count'), vote_average=('rating', 'mean')).reset_index()\n",
+                "movies = movies.merge(stats, on='movieId', how='left')\n",
+                "movies['vote_count'] = movies['vote_count'].fillna(0).astype(int)\n",
+                "movies['vote_average'] = movies['vote_average'].fillna(0.0).round(2)\n",
+                "\n",
+                "# Bayesian Weighted Rating\n",
+                "C = ratings['rating'].mean()\n",
+                "m = movies['vote_count'].quantile(0.70)\n",
+                "movies['weighted_rating'] = movies.apply(\n",
+                "    lambda row: round((row['vote_count'] / (row['vote_count'] + m) * row['vote_average']) + (m / (row['vote_count'] + m) * C), 2)\n",
+                "    if (row['vote_count'] + m) > 0 else 0.0,\n",
+                "    axis=1\n",
+                ")\n",
+                "\n",
+                "print('Top 5 Weighted Rated Masterpieces in Dataset:')\n",
+                "display(movies.sort_values('weighted_rating', ascending=False)[['title', 'year', 'vote_count', 'vote_average', 'weighted_rating']].head(5))"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "---\n",
+                "### 5. Content-Based Filtering Model\n",
+                "Transforming textual descriptors into TF-IDF matrix and calculating pairwise Cosine Similarity."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": 5,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "tfidf = TfidfVectorizer(stop_words='english', max_features=5000)\n",
+                "tfidf_matrix = tfidf.fit_transform(movies['soup'].fillna(''))\n",
+                "content_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)\n",
+                "print(f'TF-IDF Matrix Shape: {tfidf_matrix.shape}')\n",
+                "print(f'Content Similarity Matrix: {content_sim.shape}')"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "---\n",
+                "### 6. Collaborative Filtering (TruncatedSVD Matrix Factorization)\n",
+                "Evaluating on an 80/20 train-test split of user ratings."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": 6,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "train_r, test_r = train_test_split(ratings, test_size=0.2, random_state=42)\n",
+                "user_item = train_r.pivot(index='userId', columns='movieId', values='rating').fillna(0)\n",
+                "\n",
+                "# Truncated SVD\n",
+                "svd = TruncatedSVD(n_components=30, random_state=42)\n",
+                "u_factors = svd.fit_transform(user_item.values)\n",
+                "m_factors = svd.components_\n",
+                "pred_matrix = pd.DataFrame(np.dot(u_factors, m_factors), index=user_item.index, columns=user_item.columns)\n",
+                "\n",
+                "y_true, y_pred = [], []\n",
+                "for _, row in test_r.iterrows():\n",
+                "    u, m = row['userId'], row['movieId']\n",
+                "    if u in pred_matrix.index and m in pred_matrix.columns:\n",
+                "        p = max(0.5, min(5.0, pred_matrix.loc[u, m]))\n",
+                "        y_true.append(row['rating'])\n",
+                "        y_pred.append(p)\n",
+                "\n",
+                "rmse = np.sqrt(mean_squared_error(y_true, y_pred))\n",
+                "mae = mean_absolute_error(y_true, y_pred)\n",
+                "\n",
+                "print(f'Evaluated on {len(y_true)} test user ratings')\n",
+                "print(f'Collaborative SVD Test RMSE: {rmse:.4f}')\n",
+                "print(f'Collaborative SVD Test MAE:  {mae:.4f}')"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "---\n",
+                "### 7. Hybrid Recommendation Engine Demonstration\n",
+                "Combining Content-Based Similarity, Collaborative SVD Latent Features, and Bayesian Popularity Prior."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": 7,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "from src.recommender import MovieRecommenderEngine\n",
+                "engine = MovieRecommenderEngine.load_from_artifacts()\n",
+                "if engine is None:\n",
+                "    engine = MovieRecommenderEngine(movies, ratings)\n",
+                "    engine.fit_all()\n",
+                "\n",
+                "test_movies = ['Toy Story', 'Inception', 'The Dark Knight']\n",
+                "for tm in test_movies:\n",
+                "    print(f'\\n{\"=\"*25} Recommendations for {tm} {\"=\"*25}')\n",
+                "    recs, target = engine.recommend_hybrid(tm, top_n=5)\n",
+                "    if target is not None:\n",
+                "        print(f'Input: {target[\"title\"]} | Genres: {target[\"genres\"]}')\n",
+                "        display(recs[['title', 'year', 'genres', 'vote_average', 'match_score']])\n",
+                "    else:\n",
+                "        print('Movie not found.')"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "---\n",
+                "### 8. Conclusion & Deliverables\n",
+                "- Successfully built and validated Hybrid Recommendation Model.\n",
+                "- Solved cold-start problem using Content-based Fallbacks and Bayesian Average.\n",
+                "- Produced interactive web dashboard via Streamlit (`app.py`).\n",
+                "- Prepared 2-page project report PDF (`Movie_Recommendation_System_Project_Report.pdf`)."
+            ]
+        }
+    ],
+    "metadata": {
+        "kernelspec": {
+            "display_name": "Python 3",
+            "language": "python",
+            "name": "python3"
+        },
+        "language_info": {
+            "codemirror_mode": {"name": "ipython", "version": 3},
+            "file_extension": ".py",
+            "mimetype": "text/x-python",
+            "name": "python",
+            "nbformat": 4,
+            "nbformat_minor": 2,
+            "version": "3.12.4"
+        }
+    },
+    "nbformat": 4,
+    "nbformat_minor": 2
+}
+
+with open("movie_recommendation_system.ipynb", "w", encoding="utf-8") as f:
+    json.dump(notebook, f, indent=2)
+
+print("Created movie_recommendation_system.ipynb successfully!")
+

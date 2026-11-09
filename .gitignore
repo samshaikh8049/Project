@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Large model artifacts (exceeds GitHub 100MB limit; generated via python train.py)
+models/*.joblib
+!models/.gitkeep
+
+# Dataset zip archive (raw CSVs in data/ml-latest-small are tracked)
+data/*.zip
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Streamlit temporary data
+.streamlit/secrets.toml
+
+# OS generated files
+.DS_Store
+Thumbs.db
